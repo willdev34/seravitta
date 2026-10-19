@@ -492,6 +492,82 @@ class Espaco(TimeStampedModel):
                     return True
         return False
 
+    # Horário sugerido ao marcar um período que o espaço ainda não atende
+    HORARIO_PADRAO_PERIODO = {
+        'manha': ('08:00', '12:00'),
+        'tarde': ('13:00', '18:00'),
+        'noite': ('18:00', '22:00'),
+        'finais_de_semana': ('08:00', '18:00'),
+    }
+    DIAS_UTEIS = ('segunda', 'terca', 'quarta', 'quinta', 'sexta')
+    FINS_DE_SEMANA = ('sabado', 'domingo')
+
+    @staticmethod
+    def _para_texto(minutos, fim=False):
+        """
+        Converte minutos desde 00:00 em 'HH:MM'.
+        Passou da meia-noite volta para o dia seguinte; o fim às 24h vira 23:59.
+        """
+        if fim and minutos == 24 * 60:
+            minutos = 24 * 60 - 1
+        minutos %= 24 * 60
+        return f'{minutos // 60:02d}:{minutos % 60:02d}'
+
+    def aplicar_periodo(self, periodo, ativo):
+        """
+        Liga ou desliga um período (manha, tarde, noite, finais_de_semana)
+        em horarios_semana, sem apagar os demais horários já cadastrados.
+
+        - ativo e já atendido: não muda nada;
+        - ativo e não atendido: adiciona o horário padrão do período;
+        - inativo: recorta dos horários existentes a faixa do período
+          (finais_de_semana remove sábado e domingo).
+        Não salva; quem chama decide quando gravar.
+        """
+        horarios = {dia: [dict(i) for i in (itens or [])]
+                    for dia, itens in (self.horarios_semana or {}).items()}
+
+        if ativo:
+            if self.atende_no_periodo(periodo):
+                return
+            inicio, fim = self.HORARIO_PADRAO_PERIODO[periodo]
+            dias = self.FINS_DE_SEMANA if periodo == 'finais_de_semana' else self.DIAS_UTEIS
+            for dia in dias:
+                horarios.setdefault(dia, []).append({'inicio': inicio, 'fim': fim})
+        elif periodo == 'finais_de_semana':
+            for dia in self.FINS_DE_SEMANA:
+                horarios.pop(dia, None)
+        else:
+            faixa_ini, faixa_fim = self.FAIXAS_PERIODO[periodo]
+            for dia in list(horarios):
+                restantes = []
+                for item in horarios[dia]:
+                    ini = self._para_minutos(item.get('inicio'))
+                    fim = self._para_minutos(item.get('fim'))
+                    if ini is None or fim is None:
+                        restantes.append(item)  # dado fora do padrão: preserva
+                        continue
+                    if fim <= ini:
+                        fim += 24 * 60  # atravessa a meia-noite
+                    # Sobra o que ficou antes e/ou depois da faixa desligada
+                    if ini < faixa_ini:
+                        restantes.append((ini, min(fim, faixa_ini)))
+                    if fim > faixa_fim:
+                        restantes.append((max(ini, faixa_fim), fim))
+                novos = []
+                for trecho in restantes:
+                    if isinstance(trecho, dict):
+                        novos.append(trecho)
+                    elif trecho[1] > trecho[0]:
+                        novos.append({'inicio': self._para_texto(trecho[0]),
+                                      'fim': self._para_texto(trecho[1], fim=True)})
+                if novos:
+                    horarios[dia] = sorted(novos, key=lambda i: str(i.get('inicio')))
+                else:
+                    horarios.pop(dia)
+
+        self.horarios_semana = horarios
+
     def tem_horarios(self):
         """
         Verifica se o espaço tem algum horário cadastrado

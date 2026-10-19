@@ -15,7 +15,7 @@ from decimal import Decimal
 import pytest
 from django.contrib import admin
 from django.contrib.auth import get_user_model
-from django.db import models
+from django.db import IntegrityError, models, transaction
 from django.test import RequestFactory
 from django.urls import reverse
 from django.utils import timezone
@@ -104,7 +104,15 @@ def construir(modelo, cache=None, **extra):
             campos[campo.name] = valor
     campos.update(extra)
 
-    objeto = modelo.objects.create(**campos)
+    try:
+        # Savepoint: se a criação violar unicidade, a transação do teste continua válida
+        with transaction.atomic():
+            objeto = modelo.objects.create(**campos)
+    except IntegrityError:
+        # Ex.: Plano já vem populado por migração e 'nome' é único; reaproveita o existente
+        objeto = modelo.objects.first()
+        if objeto is None:
+            raise
     if not extra:
         cache[modelo] = objeto
     return objeto
@@ -183,6 +191,9 @@ class TestTelasDoAdmin:
 
     def test_confirmacao_de_exclusao_abre(self, cliente_admin, modelo, model_admin):
         objeto = self._objeto(modelo)
+        # Registros de auditoria (ex.: HistoricoAssinatura) bloqueiam exclusão de propósito
+        if not model_admin.has_delete_permission(_requisicao_falsa(), objeto):
+            pytest.skip('exclusão desabilitada neste admin')
         response = cliente_admin.get(_url(modelo, 'delete', objeto.pk))
         assert response.status_code == 200
 

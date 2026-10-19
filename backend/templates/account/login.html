@@ -3,13 +3,16 @@
 {% load account %}
 
 {# ===============================================================
-   Título: Página de Login - Espaço Vital
+   Título: Página de Login - Seravitta
    Descrição: Formulário de autenticação com link para admin
    Autor: Will
    Data: 13/11/2025
    =============================================================== #}
 
-{% block title %}Login - Espaço Vital{% endblock %}
+{% block title %}Login - Seravitta{% endblock %}
+
+{# Mensagens ficam dentro do card, não no topo da página #}
+{% block mensagens %}{% endblock %}
 
 {% block content %}
 <div class="min-h-screen flex items-center justify-center bg-gradient-to-br from-beige-50 to-beige-100 py-12 px-4 sm:px-6 lg:px-8">
@@ -18,7 +21,7 @@
         <!-- Logo -->
         <div class="text-center">
             <a href="{% url 'core:home' %}">
-                <img class="mx-auto h-20 w-auto" src="{% static 'images/logo/logotipo_minimalista.png' %}" alt="Espaço Vital">
+                <img class="mx-auto h-20 w-auto" src="{% static 'images/logo/seravitta-horizontal.svg' %}" alt="Seravitta">
             </a>
             <h2 class="mt-6 text-3xl font-bold text-gray-900">
                 Bem-vindo de volta!
@@ -31,21 +34,8 @@
         <!-- Card de Login -->
         <div class="bg-white rounded-2xl shadow-xl p-8">
             
-            <!-- Mensagens de Erro/Sucesso -->
-            {% if messages %}
-            <div class="mb-6 space-y-2">
-                {% for message in messages %}
-                {# ===== FILTRAR MENSAGENS DUPLICADAS ===== #}
-                {# Mostrar apenas mensagem de logout se foi logout recente #}
-                {# Não mostrar mensagem de login na página de login (não faz sentido) #}
-                {% if 'login' not in message.message|lower and 'sucesso como' not in message.message|lower %}
-                <div class="p-4 rounded-lg {% if message.tags == 'error' %}bg-red-50 text-red-800 border border-red-200{% elif message.tags == 'success' %}bg-green-50 text-green-800 border border-green-200{% else %}bg-blue-50 text-blue-800 border border-blue-200{% endif %}">
-                    {{ message }}
-                </div>
-                {% endif %}
-                {% endfor %}
-            </div>
-            {% endif %}
+            <!-- Mensagens do sistema (include único) -->
+            {% include 'includes/mensagens.html' %}
             
             <!-- Formulário de Login -->
             <form method="post" action="{% url 'account_login' %}" class="space-y-6">

@@ -1,5 +1,5 @@
 # ===============================================================
-# Título: Forms do App Core - Espaço Vital
+# Título: Forms do App Core - Seravitta
 # Descrição: Formulários customizados incluindo signup expandido
 # ===============================================================
 
@@ -96,7 +96,7 @@ class CustomSignupForm(SignupForm):
         max_length=50,
         required=False,
         widget=forms.TextInput(attrs={
-            'placeholder': 'Possui um cupom? Digite aqui',
+            'placeholder': 'Possui um cupom?',
             'class': 'w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent transition-all uppercase',
             'style': 'text-transform: uppercase;'
         }),
@@ -124,6 +124,13 @@ class CustomSignupForm(SignupForm):
             'class': 'w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent transition-all',
             'placeholder': 'Confirme sua senha'
         })
+        
+        # Nome de usuário: o campo vem do allauth sem estilo, então aplica o mesmo padrão dos demais
+        if 'username' in self.fields:
+            self.fields['username'].widget.attrs.update({
+                'class': 'w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent transition-all',
+                'placeholder': 'Nome de usuário'
+            })
         
         # Pré-selecionar tipo de perfil se vier do GET
         request = kwargs.get('request')
@@ -189,50 +196,18 @@ class CustomSignupForm(SignupForm):
         user.last_name = self.cleaned_data['last_name']
         user.save()
         
-        # Armazenar dados extras na sessão para usar após confirmação de email
-        request.session['signup_data'] = {
+        # Armazenar dados extras na sessão para usar após confirmação de email.
+        # O voucher usa a chave 'voucher_id', a mesma que o adapter grava e que
+        # o onboarding lê. Com outra chave o voucher digitado se perdia.
+        signup_data = {
             'phone': self.cleaned_data['phone'],
             'tipo_perfil': self.cleaned_data['tipo_perfil'],
-            'voucher': self.cleaned_data.get('voucher_code').id if self.cleaned_data.get('voucher_code') else None
         }
+
+        voucher = self.cleaned_data.get('voucher_code')
+        if voucher:
+            signup_data['voucher_id'] = voucher.id
+
+        request.session['signup_data'] = signup_data
         
         return user
-
-
-class VoucherValidationForm(forms.Form):
-    """
-    Formulário para validar voucher durante onboarding
-    """
-    voucher_code = forms.CharField(
-        label='Código do Voucher',
-        max_length=50,
-        required=True,
-        widget=forms.TextInput(attrs={
-            'placeholder': 'Digite o código do voucher',
-            'class': 'w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent transition-all uppercase text-center text-2xl font-bold tracking-widest',
-            'style': 'text-transform: uppercase; letter-spacing: 0.2em;',
-            'autocomplete': 'off'
-        })
-    )
-    
-    def clean_voucher_code(self):
-        """
-        Valida o código de voucher
-        """
-        voucher_code = self.cleaned_data.get('voucher_code', '').strip().upper()
-        
-        try:
-            voucher = Voucher.objects.get(codigo=voucher_code, is_active=True)
-            
-            # Verifica se o voucher está válido
-            if not voucher.esta_valido:
-                raise forms.ValidationError(
-                    '😔 Este voucher expirou ou já atingiu o limite de usos.'
-                )
-            
-            return voucher
-            
-        except Voucher.DoesNotExist:
-            raise forms.ValidationError(
-                '❌ Código inválido. Verifique e tente novamente.'
-            )

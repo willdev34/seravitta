@@ -1,10 +1,10 @@
 # ===============================================================
-# Título: Views do App Terapeutas - Espaço Vital
+# Título: Views do App Terapeutas - Seravitta
 # Descrição: Views para busca, listagem e perfil de terapeutas
 # ===============================================================
 
 from django.shortcuts import render, get_object_or_404, redirect
-from django.views.generic import ListView, DetailView, FormView, CreateView, UpdateView, TemplateView, View
+from django.views.generic import ListView, DetailView, FormView, CreateView, UpdateView, TemplateView, View, RedirectView
 from django.db.models import Q, Avg, Count
 from django.http import JsonResponse
 from django.core.paginator import Paginator
@@ -161,7 +161,8 @@ class TerapeutaListView(ListView):
         para_quem = self.request.GET.get('para_quem')
         if para_quem:
             if para_quem in [choice[0] for choice in ClientType.choices]:
-                queryset = queryset.filter(para_quem=para_quem)
+                # para_quem é uma lista JSON, então busca por contido na lista
+                queryset = queryset.filter(para_quem__contains=[para_quem])
         
         # Filtro: Busca por texto (nome, bio, especialidades)
         busca = self.request.GET.get('q')
@@ -241,15 +242,20 @@ class TerapeutaListView(ListView):
         context['total_resultados'] = self.get_queryset().count()
         
         # Informações da busca atual
+        # Valida se o valor da cidade é numérico antes de consultar o banco
         if context['filtros_atuais']['cidade']:
+            cidade_id = context['filtros_atuais']['cidade']
             try:
-                cidade = Cidade.objects.get(id=context['filtros_atuais']['cidade'])
+                cidade_id_int = int(cidade_id)
+                cidade = Cidade.objects.get(id=cidade_id_int)
                 context['localizacao_atual'] = f"{cidade.nome} - {cidade.estado.sigla}"
-            except Cidade.DoesNotExist:
+            except (ValueError, Cidade.DoesNotExist):
+                # ValueError: valor não é inteiro (ex: 'xyz')
+                # DoesNotExist: ID não encontrado no banco
                 pass
         
         # Meta dados da página
-        context['page_title'] = 'Buscar Terapeuta - Espaço Vital'
+        context['page_title'] = 'Buscar Terapeuta - Seravitta'
         context['meta_description'] = 'Encontre terapeutas verificados usando nossa busca avançada. Filtre por localização, especialidade, tipo de sessão e muito mais.'
         
         return context
@@ -260,9 +266,6 @@ def terapeutas_sem_filtro(request, especialidade_slug=None):
     View para listagem de terapeutas que processa filtros vindos do modal
     Usado para /terapeutas/lista/ com parâmetros da busca
     """
-    # DEBUG: Ver parâmetros recebidos
-    print(f"=== DEBUG FILTROS ===")
-    print(f"GET params: {dict(request.GET)}")
     
     terapeutas = Terapeuta.objects.filter(is_active=True).select_related(
         'cidade_principal', 'cidade_principal__estado'
@@ -271,14 +274,12 @@ def terapeutas_sem_filtro(request, especialidade_slug=None):
         'especialidades', 'avaliacoes'
     )
     
-    print(f"Terapeutas antes dos filtros: {terapeutas.count()}")
     
     # ===== PROCESSAR FILTROS DO MODAL =====
     
     # Filtro: Tipo de sessão
     tipos_sessao = request.GET.getlist('tipo_sessao')
     if tipos_sessao:
-        print(f"Filtrando por tipos_sessao: {tipos_sessao}")
         # O campo no modelo é 'tipos_sessao' (JSONField ou CharField)
         # Filtrar terapeutas que atendem pelo menos um dos tipos
         filtro_sessao = Q()
@@ -289,14 +290,12 @@ def terapeutas_sem_filtro(request, especialidade_slug=None):
         
         if filtro_sessao:
             terapeutas = terapeutas.filter(filtro_sessao)
-            print(f"Terapeutas após filtro tipo_sessao: {terapeutas.count()}")
     
     # Filtro: Localização (Estado e Cidade)
     estado = request.GET.get('estado')
     cidade = request.GET.get('cidade')
     
     if estado:
-        print(f"Filtrando por estado: {estado}")
         # Filtrar por estado usando nome ou sigla
         terapeutas = terapeutas.filter(
             Q(cidade_principal__estado__nome__icontains=estado) | 
@@ -304,25 +303,18 @@ def terapeutas_sem_filtro(request, especialidade_slug=None):
             Q(cidades_atendimento__estado__nome__icontains=estado) |
             Q(cidades_atendimento__estado__sigla__iexact=estado)
         ).distinct()
-        print(f"Terapeutas após filtro estado: {terapeutas.count()}")
     
     if cidade:
-        print(f"Filtrando por cidade: {cidade}")
         # Filtrar por cidade usando apenas nome
         terapeutas = terapeutas.filter(
             Q(cidade_principal__nome__icontains=cidade) |
             Q(cidades_atendimento__nome__icontains=cidade)
         ).distinct()
-        print(f"Terapeutas após filtro cidade: {terapeutas.count()}")
         
-        # DEBUG: Ver quais cidades existem no banco
-        cidades_existentes = Cidade.objects.values_list('nome', flat=True)
-        print(f"Cidades no banco: {list(cidades_existentes)}")
     
     # Filtro: Terapias/Especialidades
     terapias = request.GET.getlist('terapias')
     if terapias:
-        print(f"Filtrando por terapias: {terapias}")
         # Buscar especialidades pelos nomes
         especialidades_ids = []
         for terapia in terapias:
@@ -355,18 +347,14 @@ def terapeutas_sem_filtro(request, especialidade_slug=None):
         
         if especialidades_ids:
             terapeutas = terapeutas.filter(especialidades__id__in=especialidades_ids).distinct()
-            print(f"Terapeutas após filtro terapias: {terapeutas.count()}")
     
     # Filtro: Acessibilidade
     acessibilidade = request.GET.get('acessibilidade')
     if acessibilidade == 'sim':
         terapeutas = terapeutas.filter(acessibilidade=True)
-        print(f"Terapeutas após filtro acessibilidade=True: {terapeutas.count()}")
     elif acessibilidade == 'nao':
         terapeutas = terapeutas.filter(acessibilidade=False)
-        print(f"Terapeutas após filtro acessibilidade=False: {terapeutas.count()}")
     
-    print(f"=== FIM DEBUG ===")
     
     # ===== FILTRO POR ESPECIALIDADE (PARA URLs DIRETAS) =====
     especialidade = None
@@ -421,7 +409,7 @@ def terapeutas_sem_filtro(request, especialidade_slug=None):
         'total_resultados': terapeutas.count(),
         'titulo_pagina': titulo_pagina,
         'filtros_aplicados': filtros_aplicados,
-        'page_title': f'{titulo_pagina} - Espaço Vital',
+        'page_title': f'{titulo_pagina} - Seravitta',
         'meta_description': f'Encontre os melhores {titulo_pagina.lower()} verificados pela plataforma.'
     }
     
@@ -493,7 +481,7 @@ class TerapeutaDetailView(DetailView):
         ).order_by('-verificado', '-media_avaliacoes')[:3]
         
         # Meta dados
-        context['page_title'] = f'{terapeuta.nome_exibicao} - Terapeuta - Espaço Vital'
+        context['page_title'] = f'{terapeuta.nome_exibicao} - Terapeuta - Seravitta'
         context['meta_description'] = f'{terapeuta.bio_curta[:150]}...'
         
         return context
@@ -649,7 +637,7 @@ def contatar_terapeuta(request, terapeuta_slug):
     context = {
         'terapeuta': terapeuta,
         'especialidades': terapeuta.especialidades.filter(is_active=True),
-        'page_title': f'Contatar {terapeuta.nome_exibicao} - Espaço Vital',
+        'page_title': f'Contatar {terapeuta.nome_exibicao} - Seravitta',
     }
     
     return render(request, 'terapeutas/contato_form.html', context)
@@ -677,7 +665,7 @@ class TerapeutaCreateView(LoginRequiredMixin, CreateView):
         context['paises'] = Pais.objects.filter(ativo=True).order_by('nome')
         context['estados'] = Estado.objects.filter(ativo=True).order_by('nome')
         context['cidades'] = Cidade.objects.filter(ativo=True).order_by('nome')
-        context['page_title'] = 'Cadastrar Terapeuta - Espaço Vital'
+        context['page_title'] = 'Cadastrar Terapeuta - Seravitta'
         return context
 
     
@@ -997,12 +985,10 @@ class DashboardEditarPerfilView(TerapeutaRequiredMixin, FormView):
         # Salvar especialidades
         if 'especialidades' in form.cleaned_data:
             terapeuta.especialidades.set(form.cleaned_data['especialidades'])
-            print(f"✅ Especialidades salvas: {form.cleaned_data['especialidades']}")
         
         # Salvar cidades de atendimento
         if 'cidades_atendimento' in form.cleaned_data:
             terapeuta.cidades_atendimento.set(form.cleaned_data['cidades_atendimento'])
-            print(f"✅ Cidades salvas: {form.cleaned_data['cidades_atendimento']}")
         
         # Processar fotos da galeria (se houver uploads)
         fotos_galeria = self.request.FILES.getlist('fotos_galeria')
@@ -1381,7 +1367,6 @@ class DashboardAssinaturaView(TerapeutaRequiredMixin, TemplateView):
 # ===============================================================
 
 from agendamentos.models import Agendamento, VinculoTerapeutaEspaco
-from agendamentos.forms import AgendamentoForm
 from django.db.models import Q, Sum, Count
 
 
@@ -1496,119 +1481,32 @@ class DashboardAgendamentosView(TerapeutaRequiredMixin, ListView):
         return context
 
 
-class DashboardAgendamentoCriarView(TerapeutaRequiredMixin, CreateView):
+class DashboardAgendamentoCriarView(TerapeutaRequiredMixin, RedirectView):
     """
-    Título: Criar Novo Agendamento
-    Descrição: Formulário para terapeuta agendar uma sala
+    Título: Criar Novo Agendamento (rota antiga)
+    Descrição: O formulário de novo agendamento vive no app agendamentos
+               (agendamentos:agendamento_create), com todas as regras de
+               horário e vínculo. Esta rota antiga só encaminha para lá e
+               mantém links e favoritos antigos funcionando. Preserva a
+               query string (ex.: ?espaco=3).
     Autor: Will
     Data: 06/01/2026
     """
-    model = Agendamento
-    form_class = AgendamentoForm
-    template_name = 'terapeutas/dashboard/agendamento_form.html'
-    
-    def get_form_kwargs(self):
-        """
-        Passa o terapeuta para o formulário
-        """
-        kwargs = super().get_form_kwargs()
-        kwargs['terapeuta'] = self.request.user.terapeuta
-        return kwargs
-    
-    def get_context_data(self, **kwargs):
-        """
-        Adiciona informações ao contexto
-        """
-        context = super().get_context_data(**kwargs)
-        context['terapeuta'] = self.request.user.terapeuta
-        context['titulo'] = 'Novo Agendamento'
-        context['botao_texto'] = 'Confirmar Agendamento'
-        
-        # Listar espaços vinculados
-        context['espacos_vinculados'] = VinculoTerapeutaEspaco.objects.filter(
-            terapeuta=self.request.user.terapeuta,
-            status='APROVADO',
-            is_active=True
-        ).select_related('espaco')
-        
-        return context
-    
-    def form_valid(self, form):
-        """
-        Salva o agendamento e redireciona
-        """
-        from django.db import IntegrityError
-        
-        try:
-            agendamento = form.save()
-            
-            messages.success(
-                self.request,
-                f'✅ Agendamento criado com sucesso! '
-                f'Sala: {agendamento.sala.nome} - '
-                f'Data: {agendamento.data.strftime("%d/%m/%Y")} às {agendamento.hora_inicio.strftime("%H:%M")}. '
-                f'Valor: R$ {agendamento.valor_cobrado}. '
-                f'Status: Aguardando pagamento.'
-            )
-            
-            return redirect('terapeutas:dashboard_agendamentos')
-            
-        except IntegrityError as e:
-            messages.error(
-                self.request,
-                '❌ Erro ao criar agendamento. Pode já existir um agendamento neste horário. '
-                'Tente novamente.'
-            )
-            return self.form_invalid(form)
-    
-    def form_invalid(self, form):
-        """
-        Exibe erros do formulário
-        """
-        # Erros já são exibidos no template via form.errors
-        return super().form_invalid(form)
+    pattern_name = 'agendamentos:agendamento_create'
+    query_string = True
 
 
-class DashboardAgendamentoDetalheView(TerapeutaRequiredMixin, DetailView):
+class DashboardAgendamentoDetalheView(TerapeutaRequiredMixin, RedirectView):
     """
-    Título: Detalhes do Agendamento
-    Descrição: Exibe informações completas de um agendamento
+    Título: Detalhes do Agendamento (rota antiga)
+    Descrição: A tela de detalhes vive no app agendamentos
+               (agendamentos:agendamento_detail), que só mostra
+               agendamentos do próprio terapeuta. Esta rota antiga só
+               encaminha para lá.
     Autor: Will
     Data: 06/01/2026
     """
-    model = Agendamento
-    template_name = 'terapeutas/dashboard/agendamento_detalhe.html'
-    context_object_name = 'agendamento'
-    
-    def get_queryset(self):
-        """
-        Retorna apenas agendamentos do terapeuta logado
-        """
-        return Agendamento.objects.filter(
-            terapeuta=self.request.user.terapeuta
-        ).select_related('sala', 'sala__espaco', 'espaco')
-    
-    def get_context_data(self, **kwargs):
-        """
-        Adiciona informações extras ao contexto
-        """
-        context = super().get_context_data(**kwargs)
-        
-        agendamento = self.object
-        
-        # Verificar se pode cancelar sem multa
-        pode_cancelar_sem_multa, minutos_restantes = agendamento.pode_cancelar_sem_multa()
-        valor_multa = agendamento.calcular_multa_cancelamento()
-        
-        context['pode_cancelar_sem_multa'] = pode_cancelar_sem_multa
-        context['minutos_restantes'] = minutos_restantes
-        context['valor_multa'] = valor_multa
-        context['terapeuta'] = self.request.user.terapeuta
-        
-        # Verificar se pode cancelar (não pode se já concluído)
-        context['pode_cancelar'] = agendamento.status not in ['CANCELADO', 'CONCLUIDO']
-        
-        return context
+    pattern_name = 'agendamentos:agendamento_detail'
 
 
 class DashboardAgendamentoCancelarView(TerapeutaRequiredMixin, View):
@@ -1623,49 +1521,45 @@ class DashboardAgendamentoCancelarView(TerapeutaRequiredMixin, View):
         """
         Processa o cancelamento
         """
-        terapeuta = request.user.terapeuta
+        # Buscar agendamento: de outro terapeuta dá 404
+        agendamento = get_object_or_404(
+            Agendamento.objects.select_related('sala'),
+            pk=pk,
+            terapeuta=request.user.terapeuta
+        )
         
-        # Buscar agendamento
-        try:
-            agendamento = Agendamento.objects.get(
-                pk=pk,
-                terapeuta=terapeuta
+        # Aviso desatualizado: o valor da multa mudou desde que o usuário
+        # viu o aviso (ou o campo veio ausente/inválido). Não cancela.
+        # CANCELADO e CONCLUIDO são tratados pelo próprio cancelar().
+        if (
+            agendamento.status in ('PENDENTE', 'CONFIRMADO')
+            and not agendamento.multa_prevista_confere(
+                request.POST.get('multa_prevista')
             )
-        except Agendamento.DoesNotExist:
-            messages.error(request, '❌ Agendamento não encontrado.')
-            return redirect('terapeutas:dashboard_agendamentos')
+        ):
+            messages.warning(request, agendamento.texto_aviso_desatualizado())
+            return redirect('agendamentos:agendamento_detail', pk=pk)
         
-        # Verificar se pode cancelar
-        if agendamento.status == 'CANCELADO':
-            messages.warning(request, '⚠️ Este agendamento já está cancelado.')
-            return redirect('terapeutas:dashboard_agendamento_detalhe', pk=pk)
+        # Pegar motivo (opcional, limitado a 200 caracteres)
+        motivo = (
+            request.POST.get('motivo', '').strip()[:200]
+            or 'Cancelado pelo terapeuta'
+        )
         
-        if agendamento.status == 'CONCLUIDO':
-            messages.error(request, '❌ Não é possível cancelar um agendamento já concluído.')
-            return redirect('terapeutas:dashboard_agendamento_detalhe', pk=pk)
-        
-        # Pegar motivo (opcional)
-        motivo = request.POST.get('motivo', 'Cancelado pelo terapeuta')
-        
-        # Cancelar
+        # Cancelar (regra da multa, transação e lock ficam no model)
         sucesso, mensagem, valor_multa = agendamento.cancelar(
             usuario=request.user,
             motivo=motivo
         )
         
-        if sucesso:
-            if valor_multa > 0:
-                messages.warning(
-                    request,
-                    f'⚠️ {mensagem}'
-                )
-            else:
-                messages.success(
-                    request,
-                    f'✅ {mensagem}'
-                )
-        else:
+        if not sucesso:
             messages.error(request, f'❌ {mensagem}')
+            return redirect('agendamentos:agendamento_detail', pk=pk)
+        
+        if valor_multa > 0:
+            messages.warning(request, f'⚠️ {mensagem}')
+        else:
+            messages.success(request, f'✅ {mensagem}')
         
         return redirect('terapeutas:dashboard_agendamentos')
 

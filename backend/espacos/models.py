@@ -1,5 +1,5 @@
 # ===============================================================
-# Título: Models do App Espacos - Espaço Vital
+# Título: Models do App Espacos - Seravitta
 # Descrição: Models para gerenciar espaços terapêuticos, comodidades e avaliações
 # ===============================================================
 
@@ -446,6 +446,128 @@ class Espaco(TimeStampedModel):
         
         return horarios_formatados
 
+    # Faixas do dia usadas pelo filtro de disponibilidade (em minutos)
+    FAIXAS_PERIODO = {
+        'manha': (0, 12 * 60),
+        'tarde': (12 * 60, 18 * 60),
+        'noite': (18 * 60, 24 * 60),
+    }
+
+    @staticmethod
+    def _para_minutos(texto):
+        """Converte 'HH:MM' em minutos desde 00:00. Retorna None se inválido."""
+        try:
+            horas, minutos = str(texto).split(':')[:2]
+            return int(horas) * 60 + int(minutos)
+        except (ValueError, TypeError):
+            return None
+
+    def atende_no_periodo(self, periodo):
+        """
+        Informa se o espaço tem horário de funcionamento no período.
+
+        Regras:
+        - manha, tarde, noite: algum horário cadastrado cruza a faixa
+          (manhã até 12h, tarde de 12h a 18h, noite a partir das 18h);
+        - finais_de_semana: sábado ou domingo com ao menos um horário.
+        """
+        horarios = self.horarios_semana or {}
+        fim_de_semana = ('sabado', 'domingo')
+
+        for dia, periodos in horarios.items():
+            if periodo == 'finais_de_semana' and dia not in fim_de_semana:
+                continue
+            for item in periodos or []:
+                inicio = self._para_minutos(item.get('inicio'))
+                fim = self._para_minutos(item.get('fim'))
+                if inicio is None or fim is None:
+                    continue
+                if fim <= inicio:
+                    fim += 24 * 60  # fecha depois da meia-noite
+
+                if periodo == 'finais_de_semana':
+                    return True
+                faixa = self.FAIXAS_PERIODO.get(periodo)
+                if faixa and inicio < faixa[1] and fim > faixa[0]:
+                    return True
+        return False
+
+    # Horário sugerido ao marcar um período que o espaço ainda não atende
+    HORARIO_PADRAO_PERIODO = {
+        'manha': ('08:00', '12:00'),
+        'tarde': ('13:00', '18:00'),
+        'noite': ('18:00', '22:00'),
+        'finais_de_semana': ('08:00', '18:00'),
+    }
+    DIAS_UTEIS = ('segunda', 'terca', 'quarta', 'quinta', 'sexta')
+    FINS_DE_SEMANA = ('sabado', 'domingo')
+
+    @staticmethod
+    def _para_texto(minutos, fim=False):
+        """
+        Converte minutos desde 00:00 em 'HH:MM'.
+        Passou da meia-noite volta para o dia seguinte; o fim às 24h vira 23:59.
+        """
+        if fim and minutos == 24 * 60:
+            minutos = 24 * 60 - 1
+        minutos %= 24 * 60
+        return f'{minutos // 60:02d}:{minutos % 60:02d}'
+
+    def aplicar_periodo(self, periodo, ativo):
+        """
+        Liga ou desliga um período (manha, tarde, noite, finais_de_semana)
+        em horarios_semana, sem apagar os demais horários já cadastrados.
+
+        - ativo e já atendido: não muda nada;
+        - ativo e não atendido: adiciona o horário padrão do período;
+        - inativo: recorta dos horários existentes a faixa do período
+          (finais_de_semana remove sábado e domingo).
+        Não salva; quem chama decide quando gravar.
+        """
+        horarios = {dia: [dict(i) for i in (itens or [])]
+                    for dia, itens in (self.horarios_semana or {}).items()}
+
+        if ativo:
+            if self.atende_no_periodo(periodo):
+                return
+            inicio, fim = self.HORARIO_PADRAO_PERIODO[periodo]
+            dias = self.FINS_DE_SEMANA if periodo == 'finais_de_semana' else self.DIAS_UTEIS
+            for dia in dias:
+                horarios.setdefault(dia, []).append({'inicio': inicio, 'fim': fim})
+        elif periodo == 'finais_de_semana':
+            for dia in self.FINS_DE_SEMANA:
+                horarios.pop(dia, None)
+        else:
+            faixa_ini, faixa_fim = self.FAIXAS_PERIODO[periodo]
+            for dia in list(horarios):
+                restantes = []
+                for item in horarios[dia]:
+                    ini = self._para_minutos(item.get('inicio'))
+                    fim = self._para_minutos(item.get('fim'))
+                    if ini is None or fim is None:
+                        restantes.append(item)  # dado fora do padrão: preserva
+                        continue
+                    if fim <= ini:
+                        fim += 24 * 60  # atravessa a meia-noite
+                    # Sobra o que ficou antes e/ou depois da faixa desligada
+                    if ini < faixa_ini:
+                        restantes.append((ini, min(fim, faixa_ini)))
+                    if fim > faixa_fim:
+                        restantes.append((max(ini, faixa_fim), fim))
+                novos = []
+                for trecho in restantes:
+                    if isinstance(trecho, dict):
+                        novos.append(trecho)
+                    elif trecho[1] > trecho[0]:
+                        novos.append({'inicio': self._para_texto(trecho[0]),
+                                      'fim': self._para_texto(trecho[1], fim=True)})
+                if novos:
+                    horarios[dia] = sorted(novos, key=lambda i: str(i.get('inicio')))
+                else:
+                    horarios.pop(dia)
+
+        self.horarios_semana = horarios
+
     def tem_horarios(self):
         """
         Verifica se o espaço tem algum horário cadastrado
@@ -462,15 +584,30 @@ class Espaco(TimeStampedModel):
             models.Index(fields=['is_destaque', 'is_premium']),
         ]
 
+    @property
+    def local_texto(self):
+        """
+        Cidade para exibição: a cidade do banco (Brasil, com estado e país,
+        como no __str__ de Cidade) ou o texto livre (outros países).
+        Vazio quando nenhum dos dois foi informado.
+        """
+        if self.cidade:
+            return str(self.cidade)
+        return self.cidade_texto
+
     def __str__(self):
-        return f"{self.nome} - {self.cidade}"
+        return self.nome_completo
 
     def save(self, *args, **kwargs):
         """
         Gera slug automático e validações personalizadas
         """
         if not self.slug:
-            base_slug = slugify(f"{self.nome}-{self.cidade.nome}")
+            # A cidade é opcional (outro país usa texto livre ou nada); antes
+            # self.cidade.nome quebrava com AttributeError quando não havia cidade
+            nome_da_cidade = self.cidade.nome if self.cidade else self.cidade_texto
+            partes = [self.nome, nome_da_cidade]
+            base_slug = slugify('-'.join(parte for parte in partes if parte))
             slug = base_slug
             counter = 1
             while Espaco.objects.filter(slug=slug).exclude(pk=self.pk).exists():
@@ -488,9 +625,11 @@ class Espaco(TimeStampedModel):
     @property
     def nome_completo(self):
         """
-        Nome completo com localização
+        Nome completo com localização (só o nome, se não houver cidade)
         """
-        return f"{self.nome} - {self.cidade}"
+        if self.local_texto:
+            return f"{self.nome} - {self.local_texto}"
+        return self.nome
 
     @property
     def media_avaliacoes(self):

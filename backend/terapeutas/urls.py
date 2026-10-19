@@ -1,5 +1,5 @@
 # ===============================================================
-# Título: URLs do App Terapeutas - Espaço Vital
+# Título: URLs do App Terapeutas - Seravitta
 # Descrição: Configuração de rotas para busca, perfil e dashboard de terapeutas
 # ===============================================================
 
@@ -34,11 +34,11 @@ urlpatterns = [
     # Listagem simples sem filtros
     # URL: /terapeutas/lista/
     # Baseada no layout sem filtro compartilhado
-    # path(
-    #     'lista/', 
-    #     views.terapeutas_sem_filtro, 
-    #     name='listagem_simples'
-    # ),
+    path(
+        'lista/', 
+        views.terapeutas_sem_filtro, 
+        name='listagem_simples'
+    ),
     
     # Listagem por especialidade (sem filtros)
     # URL: /terapeutas/especialidade/massoterapia/

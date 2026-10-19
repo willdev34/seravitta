@@ -1,5 +1,5 @@
 # ===============================================================
-# Título: Models do App Terapeutas - Espaço Vital
+# Título: Models do App Terapeutas - Seravitta
 # Descrição: Models para gerenciar terapeutas, especialidades e avaliações
 # ===============================================================
 
@@ -407,7 +407,7 @@ class Terapeuta(BaseModel):
         super().save(*args, **kwargs)
     
     def get_absolute_url(self):
-        return reverse('terapeutas:profile', kwargs={'slug': self.slug})
+        return reverse('terapeutas:perfil', kwargs={'slug': self.slug})
     
     @property
     def rating_medio(self):
@@ -573,28 +573,18 @@ class Terapeuta(BaseModel):
         """
         Retorna cidade formatada - Brasil ou outros países
         """
-        print(f"=== DEBUG LOCALIZAÇÃO ===")
-        print(f"Terapeuta: {self.nome_exibicao}")
-        print(f"Pais: {self.pais}")
-        print(f"Estado: {self.estado}")
-        print(f"Cidade Principal: {self.cidade_principal}")
-        print(f"Cidade Texto: {self.cidade_texto}")
-        
         # Brasil - cidade do banco com estado
         if self.cidade_principal and self.cidade_principal.estado:
             resultado = f"{self.cidade_principal.nome} - {self.cidade_principal.estado.sigla}"
-            print(f"Retornando (Brasil): {resultado}")
             return resultado
         
         # Outros países - cidade texto
         elif self.cidade_texto:
             pais_nome = self.pais.nome if self.pais else ""
             resultado = f"{self.cidade_texto} - {pais_nome}"
-            print(f"Retornando (Outros): {resultado}")
             return resultado
         
         # Fallback
-        print("Retornando: Não informado")
         return "Não informado"
 # Fim classe Terapeutas
 

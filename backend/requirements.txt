@@ -1,5 +1,5 @@
 # ===============================================================
-# Título: Requirements - Espaço Vital
+# Título: Requirements - Seravitta
 # Descrição: Dependências Python para o projeto
 # ===============================================================
 
@@ -49,10 +49,11 @@ django-debug-toolbar==4.2.0
 django-extensions==3.2.3
 
 # Testing
-pytest==7.4.4
+pytest==9.0.3
 pytest-django==4.8.0
+pytest-cov==4.1.0       # Integração entre pytest e coverage (quality gate)
 factory-boy==3.3.0
-coverage==7.3.2
+coverage==7.14.1
 
 # Code Quality
 flake8==6.1.0
@@ -102,10 +103,8 @@ django-dbbackup==4.0.2
 # ===============================================================
 # Produção e Deploy
 # ===============================================================
-gunicorn==21.2.0
-python-decouple==3.8
-psycopg2-binary==2.9.9
-whitenoise==6.6.0
+# gunicorn, python-decouple, psycopg2-binary e whitenoise já estão declarados acima
+# Lê a DATABASE_URL (Neon) e converte para o formato de banco do Django
 dj-database-url==2.1.0
 # Development Dependencies (apenas para desenvolvimento)
 # Descomente se necessário:

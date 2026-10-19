@@ -1,5 +1,5 @@
 # ===============================================================
-# Título: Admin Customizado para Permissões - Espaço Vital (Corrigido)
+# Título: Admin Customizado para Permissões - Seravitta (Corrigido)
 # Descrição: Customizações do Django Admin com permissões traduzidas
 # ===============================================================
 
@@ -635,8 +635,8 @@ admin.site.register(Group, CustomGroupAdmin)
 # ===============================================================
 
 # Personalizar título do admin
-admin.site.site_header = "Espaço Vital - Administração"
-admin.site.site_title = "Espaço Vital Admin"
+admin.site.site_header = "Seravitta - Administração"
+admin.site.site_title = "Seravitta Admin"
 admin.site.index_title = "Painel de Controle"
 admin.site.site_url = "/"  # Link para voltar ao site
 
@@ -756,14 +756,17 @@ class CidadeAdmin(admin.ModelAdmin):
     ]
     
     def get_estado(self, obj):
-        """Retorna estado com sigla"""
+        """Retorna estado com sigla (cidade de outro país pode não ter estado)"""
+        if not obj.estado:
+            return '-'
         return f'{obj.estado.nome} ({obj.estado.sigla})'
     get_estado.short_description = 'Estado'
     get_estado.admin_order_field = 'estado__nome'
     
     def get_pais(self, obj):
-        """Retorna país"""
-        return obj.estado.pais.nome
+        """Retorna país: o do estado ou, sem estado, o da própria cidade"""
+        pais = obj.estado.pais if obj.estado else obj.pais
+        return pais.nome if pais else '-'
     get_pais.short_description = 'País'
     get_pais.admin_order_field = 'estado__pais__nome'
     

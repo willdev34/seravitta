@@ -1,5 +1,5 @@
 # ===============================================================
-# Título: Forms do App Espacos - Espaço Vital
+# Título: Forms do App Espacos - Seravitta
 # Descrição: Formulários para contato, avaliação e edição de espaços terapêuticos
 #
 # Data: 26/12/2025
@@ -179,6 +179,15 @@ class EspacoForm(forms.ModelForm):
     
     # ===== CHECKBOXES DE DISPONIBILIDADE =====
     # Esses campos serão convertidos para JSONField ao salvar
+    
+    # Períodos que os checkboxes de disponibilidade representam
+    # (nome do campo -> período usado em Espaco.atende_no_periodo/aplicar_periodo)
+    PERIODOS_DISPONIBILIDADE = {
+        'disponibilidade_manha': 'manha',
+        'disponibilidade_tarde': 'tarde',
+        'disponibilidade_noite': 'noite',
+        'disponibilidade_finais_semana': 'finais_de_semana',
+    }
     
     disponibilidade_manha = forms.BooleanField(
         required=False,
@@ -374,9 +383,10 @@ class EspacoForm(forms.ModelForm):
         
         # ===== CARREGAR VALORES DE DISPONIBILIDADE (ao editar) =====
         if self.instance and self.instance.pk:
-            # O model usa horarios_semana (JSONField) ao invés de disponibilidade
-            # Por enquanto, deixar os checkboxes desmarcados (valores padrão)
-            # TODO: Implementar lógica para converter horarios_semana em checkboxes
+            # O model guarda os horários em horarios_semana (JSON); os 4 checkboxes
+            # mostram quais períodos o espaço atende hoje
+            for campo, periodo in self.PERIODOS_DISPONIBILIDADE.items():
+                self.fields[campo].initial = self.instance.atende_no_periodo(periodo)
             
             # Popular campo estado se houver cidade selecionada
             if self.instance.cidade:
@@ -489,27 +499,20 @@ class EspacoForm(forms.ModelForm):
     
     def save(self, commit=True):
         """
-        Salvar o formulário convertendo checkboxes para JSONField
+        Salvar o formulário aplicando os checkboxes de disponibilidade
         
-        IMPORTANTE: Este método converte os 4 checkboxes de disponibilidade
-        para uma lista JSON que será salva no campo 'disponibilidade' do model.
+        Os 4 checkboxes alteram só o período que mudou em horarios_semana:
+        marcar adiciona um horário padrão, desmarcar recorta os horários
+        existentes. Períodos que o usuário não mexeu ficam como estão, então
+        os horários detalhados da tela de Disponibilidade não se perdem.
         """
         espaco = super().save(commit=False)
         
-        # ===== MONTAR LISTA DE DISPONIBILIDADE =====
-        disponibilidade = []
-        
-        if self.cleaned_data.get('disponibilidade_manha'):
-            disponibilidade.append('manha')
-        if self.cleaned_data.get('disponibilidade_tarde'):
-            disponibilidade.append('tarde')
-        if self.cleaned_data.get('disponibilidade_noite'):
-            disponibilidade.append('noite')
-        if self.cleaned_data.get('disponibilidade_finais_semana'):
-            disponibilidade.append('finais_de_semana')
-        
-        # Atribuir ao model (JSONField)
-        espaco.disponibilidade = disponibilidade
+        # ===== APLICAR SOMENTE O QUE MUDOU NOS PERÍODOS =====
+        for campo, periodo in self.PERIODOS_DISPONIBILIDADE.items():
+            desejado = bool(self.cleaned_data.get(campo))
+            if desejado != espaco.atende_no_periodo(periodo):
+                espaco.aplicar_periodo(periodo, desejado)
         
         # ===== ATRIBUIR ESTADO (se for Brasil) =====
         cidade = self.cleaned_data.get('cidade')

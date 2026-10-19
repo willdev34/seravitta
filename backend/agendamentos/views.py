@@ -11,6 +11,8 @@ from django.shortcuts import get_object_or_404, redirect
 from django.contrib import messages
 from django.urls import reverse_lazy
 from espacos.models import Espaco
+from terapeutas.views import TerapeutaRequiredMixin
+from .forms import AgendamentoForm, AgendamentoEditarForm
 from .models import Agendamento, Sala
 
 
@@ -41,60 +43,60 @@ class GetComodidadesEspacoView(View):
 # ==========================================
 # CRIAR AGENDAMENTO
 # ==========================================
-class AgendamentoCriarView(LoginRequiredMixin, CreateView):
+class AgendamentoCriarView(TerapeutaRequiredMixin, CreateView):
     """
-    Descrição: Formulário para o terapeuta criar um novo agendamento de sala
+    Descrição: Formulário para o terapeuta criar um novo agendamento de sala.
+               Valida pelo AgendamentoForm: data, antecedência mínima,
+               horário da sala, conflito e vínculo com o espaço.
+               O terapeuta vem do usuário logado, nunca do POST.
     """
     model = Agendamento
+    form_class = AgendamentoForm
     template_name = 'agendamentos/agendamento_form.html'
-    fields = ['sala', 'data', 'hora_inicio', 'hora_fim', 'observacoes']
     success_url = reverse_lazy('terapeutas:dashboard_agendamentos')
 
-    def get_form(self, form_class=None):
+    def get_form_kwargs(self):
         """
-        Lista salas ativas disponíveis para agendamento.
-
-        TODO [FASE VÍNCULO]: Substituir o filtro abaixo para retornar
-        apenas salas de espaços onde o terapeuta está APROVADO.
-        Depende da implementação do model VinculoTerapeutaEspaco.
-
-        Exemplo futuro:
-            vinculos_aprovados = VinculoTerapeutaEspaco.objects.filter(
-                terapeuta=self.request.user.terapeuta,
-                status='APROVADO'
-            ).values_list('espaco_id', flat=True)
-
-            form.fields['sala'].queryset = Sala.objects.filter(
-                is_active=True,
-                espaco_id__in=vinculos_aprovados
-            ).select_related('espaco').order_by('espaco__nome', 'nome')
+        Passa o terapeuta logado para o formulário
         """
-        form = super().get_form(form_class)
+        kwargs = super().get_form_kwargs()
+        kwargs['terapeuta'] = self.request.user.terapeuta
+        return kwargs
 
-        # Temporário: lista todas as salas ativas
-        # Será substituído quando o sistema de vínculos for implementado
-        form.fields['sala'].queryset = Sala.objects.filter(
+    def get_context_data(self, **kwargs):
+        """
+        Envia ao template os espaços vinculados e as salas ativas deles.
+        O JS monta o select de sala conforme o espaço escolhido; a
+        validação de verdade continua no AgendamentoForm (servidor).
+        """
+        context = super().get_context_data(**kwargs)
+
+        espacos = context['form'].fields['espaco'].queryset
+        salas = Sala.objects.filter(
+            espaco__in=espacos,
             is_active=True
         ).select_related('espaco').order_by('espaco__nome', 'nome')
 
-        return form
+        context['tem_espacos_vinculados'] = espacos.exists()
+        context['salas'] = salas
+        context['salas_json'] = [
+            {
+                'id': sala.pk,
+                'nome': sala.nome,
+                'espaco_id': sala.espaco_id,
+                'valor': str(sala.valor_sessao),
+                'duracao': sala.duracao_sessao,
+            }
+            for sala in salas
+        ]
+        return context
 
     def form_valid(self, form):
         """
-        Associa o terapeuta e o espaço ao agendamento antes de salvar
+        Salva pelo formulário, que define terapeuta, espaço, hora_fim,
+        valor, status e pago. Campos forjados no POST são ignorados.
         """
-        agendamento = form.save(commit=False)
-
-        # Vincula o terapeuta logado
-        agendamento.terapeuta = self.request.user.terapeuta
-
-        # Vincula o espaço a partir da sala escolhida
-        agendamento.espaco = agendamento.sala.espaco
-
-        # Define valor cobrado a partir da sala
-        agendamento.valor_cobrado = agendamento.sala.valor_sessao
-
-        agendamento.save()
+        self.object = form.save()
 
         messages.success(
             self.request,
@@ -102,23 +104,14 @@ class AgendamentoCriarView(LoginRequiredMixin, CreateView):
         )
         return redirect(self.success_url)
 
-    def form_invalid(self, form):
-        """
-        Retorna mensagem de erro se o formulário for inválido
-        """
-        messages.error(
-            self.request,
-            '❌ Erro ao criar agendamento. Verifique os dados e tente novamente.'
-        )
-        return super().form_invalid(form)
-
 
 # ==========================================
 # DETALHES DO AGENDAMENTO
 # ==========================================
-class AgendamentoDetalheView(LoginRequiredMixin, DetailView):
+class AgendamentoDetalheView(TerapeutaRequiredMixin, DetailView):
     """
-    Descrição: Exibe todos os dados de um agendamento específico
+    Descrição: Exibe todos os dados de um agendamento específico.
+               Usuário sem perfil de terapeuta vai para a home.
     """
     model = Agendamento
     template_name = 'agendamentos/agendamento_detail.html'
@@ -136,24 +129,58 @@ class AgendamentoDetalheView(LoginRequiredMixin, DetailView):
 # ==========================================
 # EDITAR AGENDAMENTO
 # ==========================================
-class AgendamentoEditarView(LoginRequiredMixin, UpdateView):
+class AgendamentoEditarView(TerapeutaRequiredMixin, UpdateView):
     """
-    Descrição: Formulário para editar um agendamento existente
-               Só permite editar agendamentos PENDENTE ou CONFIRMADO
+    Descrição: Formulário para editar um agendamento existente.
+               Só edita agendamento PENDENTE do próprio terapeuta, e só
+               data, hora de início e observações (AgendamentoEditarForm).
+               Os demais status vão para o detalhe com mensagem de erro.
     """
     model = Agendamento
+    form_class = AgendamentoEditarForm
     template_name = 'agendamentos/agendamento_form.html'
-    fields = ['data', 'hora_inicio', 'hora_fim', 'observacoes', 'valor_cobrado']
     success_url = reverse_lazy('terapeutas:dashboard_agendamentos')
 
     def get_queryset(self):
         """
-        Só permite editar agendamentos do próprio terapeuta
-        e que ainda estejam pendentes ou confirmados
+        Só agendamentos do próprio terapeuta: de outro dá 404.
+        O status é tratado em _bloquear_se_nao_pendente.
         """
         return Agendamento.objects.filter(
-            terapeuta=self.request.user.terapeuta,
-            status__in=['PENDENTE', 'CONFIRMADO']
+            terapeuta=self.request.user.terapeuta
+        ).select_related('sala', 'sala__espaco')
+
+    def _bloquear_se_nao_pendente(self):
+        """
+        Devolve um redirect para o detalhe quando o agendamento não
+        está PENDENTE; devolve None quando a edição pode seguir.
+        """
+        if self.get_object().status != 'PENDENTE':
+            messages.error(
+                self.request,
+                '❌ Só é possível editar agendamentos pendentes.'
+            )
+            return redirect(
+                'agendamentos:agendamento_detail', pk=self.kwargs['pk']
+            )
+        return None
+
+    def get(self, request, *args, **kwargs):
+        """
+        Bloqueia o GET fora de PENDENTE antes de mostrar o formulário
+        """
+        return (
+            self._bloquear_se_nao_pendente()
+            or super().get(request, *args, **kwargs)
+        )
+
+    def post(self, request, *args, **kwargs):
+        """
+        Bloqueia o POST fora de PENDENTE antes de validar e gravar
+        """
+        return (
+            self._bloquear_se_nao_pendente()
+            or super().post(request, *args, **kwargs)
         )
 
     def form_valid(self, form):
@@ -170,10 +197,14 @@ class AgendamentoEditarView(LoginRequiredMixin, UpdateView):
 # ==========================================
 # CANCELAR AGENDAMENTO
 # ==========================================
-class AgendamentoCancelarView(LoginRequiredMixin, View):
+class AgendamentoCancelarView(TerapeutaRequiredMixin, View):
     """
-    Descrição: Muda o status do agendamento para CANCELADO
-               Só cancela agendamentos PENDENTE ou CONFIRMADO
+    Descrição: Cancela o agendamento pelo Agendamento.cancelar(), que
+               aplica a regra da multa (só CONFIRMADO) de forma atômica
+               e sem duplicar multa. Só o terapeuta dono cancela (de
+               outro: 404). Exige o valor da multa que o usuário viu no
+               aviso (multa_prevista); se estiver desatualizado, ausente
+               ou inválido, não cancela.
     """
 
     def post(self, request, pk):
@@ -182,18 +213,41 @@ class AgendamentoCancelarView(LoginRequiredMixin, View):
         """
         # Busca o agendamento garantindo que é do terapeuta logado
         agendamento = get_object_or_404(
-            Agendamento,
+            Agendamento.objects.select_related('sala'),
             pk=pk,
-            terapeuta=request.user.terapeuta,
-            status__in=['PENDENTE', 'CONFIRMADO']
+            terapeuta=request.user.terapeuta
         )
 
-        # Muda o status para cancelado
-        agendamento.status = 'CANCELADO'
-        agendamento.save()
+        # Aviso desatualizado: o valor da multa mudou desde que a tela foi
+        # aberta. Não cancela; o detalhe mostra o aviso recalculado.
+        # CANCELADO e CONCLUIDO são tratados pelo próprio cancelar().
+        if (
+            agendamento.status in ('PENDENTE', 'CONFIRMADO')
+            and not agendamento.multa_prevista_confere(
+                request.POST.get('multa_prevista')
+            )
+        ):
+            messages.warning(request, agendamento.texto_aviso_desatualizado())
+            return redirect('agendamentos:agendamento_detail', pk=agendamento.pk)
 
-        messages.success(
-            request,
-            '✅ Agendamento cancelado com sucesso!'
+        # Motivo opcional, limitado a 200 caracteres
+        motivo = (
+            request.POST.get('motivo', '').strip()[:200]
+            or 'Cancelado pelo terapeuta'
         )
+
+        sucesso, mensagem, valor_multa = agendamento.cancelar(
+            usuario=request.user,
+            motivo=motivo
+        )
+
+        if not sucesso:
+            messages.error(request, f'❌ {mensagem}')
+            return redirect('agendamentos:agendamento_detail', pk=agendamento.pk)
+
+        if valor_multa > 0:
+            messages.warning(request, f'⚠️ {mensagem}')
+        else:
+            messages.success(request, f'✅ {mensagem}')
+
         return redirect('terapeutas:dashboard_agendamentos')

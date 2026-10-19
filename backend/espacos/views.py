@@ -1,15 +1,16 @@
 # ===============================================================
-# Título: Views do App Espacos - Espaço Vital
+# Título: Views do App Espacos - Seravitta
 # Descrição: Views para busca, listagem e perfil de espaços terapêuticos
 # ===============================================================
 
 from django.shortcuts import render, get_object_or_404, redirect
 from django.views.generic import ListView, DetailView, TemplateView, CreateView, UpdateView, View
-from django.db.models import Q, Avg, Count, Prefetch
-from django.http import JsonResponse
+from django.db.models import F, Q, Avg, Count, Prefetch
+from django.http import Http404, JsonResponse
 from django.core.paginator import Paginator
 from django.contrib import messages
 from django.utils import timezone
+from django.utils.text import slugify
 from django.urls import reverse_lazy, reverse
 from django.contrib.auth.mixins import LoginRequiredMixin
 from .models import (
@@ -80,7 +81,12 @@ class EspacoListView(ListView):
         # Filtro: Terapias disponíveis (multi-select)
         terapias = self.request.GET.getlist('terapias')
         if terapias and 'todas' not in terapias:
-            queryset = queryset.filter(especialidades__id__in=terapias).distinct()
+            try:
+                terapias_int = [int(t) for t in terapias if str(t).isdigit()]
+                if terapias_int:
+                    queryset = queryset.filter(especialidades__id__in=terapias_int).distinct()
+            except (ValueError, TypeError):
+                pass
         
         # Filtro: Espaço com acessibilidade? (Sim/Não)
         acessibilidade = self.request.GET.get('acessibilidade')
@@ -99,18 +105,25 @@ class EspacoListView(ListView):
         # Filtro: Disponibilidade por período
         disponibilidade = self.request.GET.getlist('disponibilidade')
         if disponibilidade:
-            # Filtra espaços que têm pelo menos um dos períodos selecionados
-            q_objects = Q()
-            for periodo in disponibilidade:
-                q_objects |= Q(disponibilidade__contains=periodo)
-            queryset = queryset.filter(q_objects)
+            # Filtra espaços que atendem em pelo menos um dos períodos
+            # selecionados. O horário fica em horarios_semana (JSON), então
+            # a checagem é feita pelo model e o resultado vira lista de ids.
+            ids_disponiveis = [
+                espaco.pk
+                for espaco in Espaco.objects.filter(is_active=True)
+                if any(espaco.atende_no_periodo(p) for p in disponibilidade)
+            ]
+            queryset = queryset.filter(pk__in=ids_disponiveis)
         
         # Filtro: Comodidades desejadas (checkboxes múltiplos)
         comodidades = self.request.GET.getlist('comodidades')
         if comodidades:
             # Filtra espaços que têm TODAS as comodidades selecionadas
             for comodidade_id in comodidades:
-                queryset = queryset.filter(comodidades__id=comodidade_id)
+                try:
+                    queryset = queryset.filter(comodidades__id=int(comodidade_id))
+                except (ValueError, TypeError):
+                    pass
         
         # Filtro: Busca por texto (nome, descrição, localização)
         busca = self.request.GET.get('busca', '').strip()
@@ -128,7 +141,13 @@ class EspacoListView(ListView):
         if ordem == 'nome':
             queryset = queryset.order_by('nome')
         elif ordem == 'avaliacao':
-            queryset = queryset.order_by('-media_avaliacoes', '-total_avaliacoes')
+            # Usa as anotações da própria consulta (media_avaliacoes e
+            # total_avaliacoes são propriedades do model, não campos)
+            # nulls_last: espaços sem avaliação ficam depois dos avaliados
+            # (no Postgres, NULL vem primeiro na ordem decrescente)
+            queryset = queryset.order_by(
+                F('avg_avaliacoes').desc(nulls_last=True), '-count_avaliacoes'
+            )
         elif ordem == 'recente':
             queryset = queryset.order_by('-created_at')
         else:  # destaque (padrão)
@@ -214,6 +233,12 @@ class EspacoListagemSimplesView(ListView):
                 espacos = self.get_queryset().filter(cidade__nome=regiao)[:6]
             context['espacos_por_regiao'][regiao] = espacos
         
+        # Dados do filtro lateral (enviado para a busca avançada)
+        context['estados'] = Estado.objects.filter(ativo=True).order_by('nome')
+        context['todas_especialidades'] = Especialidade.objects.filter(
+            is_active=True
+        ).order_by('nome')
+        
         return context
 
 
@@ -228,7 +253,19 @@ class EspacoPorRegiaoView(ListView):
     
     def get_queryset(self):
         cidade_slug = self.kwargs.get('cidade_slug')
-        self.cidade = get_object_or_404(Cidade, slug=cidade_slug)
+
+        # Cidade não tem campo slug: compara o slug do nome entre as cidades
+        # que têm espaço ativo (conjunto pequeno). Se duas cidades de estados
+        # diferentes tiverem o mesmo nome, vale a primeira.
+        cidades_com_espaco = Cidade.objects.filter(
+            espacos__is_active=True
+        ).select_related('estado').distinct().order_by('nome', 'id')
+        self.cidade = next(
+            (c for c in cidades_com_espaco if slugify(c.nome) == cidade_slug),
+            None
+        )
+        if self.cidade is None:
+            raise Http404('Região não encontrada')
         
         return Espaco.objects.filter(
             is_active=True, cidade=self.cidade
@@ -777,30 +814,15 @@ class DashboardEditarEspacoView(EspacoRequiredMixin, TemplateView):
             messages.success(request, '✅ Perfil do espaço atualizado com sucesso!')
             return redirect('espacos:dashboard_editar')
         else:
-            # ===== MENSAGENS DE ERRO DETALHADAS =====
-            
-            # Erros do formulário principal
-            if form.errors:
-                for field, errors in form.errors.items():
-                    field_name = form.fields[field].label if field in form.fields else field
-                    for error in errors:
-                        messages.error(request, f'❌ {field_name}: {error}')
-            
-            # Erros do formset de galeria
-            if galeria_formset.errors:
-                for i, form_errors in enumerate(galeria_formset.errors):
-                    if form_errors:
-                        for field, errors in form_errors.items():
-                            for error in errors:
-                                messages.error(request, f'❌ Foto {i+1} - {field}: {error}')
-            
-            # Erros não relacionados a campos específicos
-            if galeria_formset.non_form_errors():
-                for error in galeria_formset.non_form_errors():
-                    messages.error(request, f'❌ Galeria: {error}')
-            
-            # Mensagem geral se não houver erros específicos
-            if not form.errors and not galeria_formset.errors:
+            # ===== MENSAGEM DE ERRO ÚNICA =====
+            # Os erros por campo já aparecem no formulário; aqui fica
+            # só um aviso geral, sem repetir cada erro como mensagem
+            tem_erro_no_formset = (
+                any(galeria_formset.errors) or galeria_formset.non_form_errors()
+            )
+            if form.errors or tem_erro_no_formset:
+                messages.error(request, '❌ Corrija os campos destacados.')
+            else:
                 messages.error(request, '❌ Erro desconhecido ao salvar. Tente novamente.')
         
         # Se houver erros, renderizar novamente
@@ -991,6 +1013,9 @@ class DashboardSalaCriarView(EspacoRequiredMixin, CreateView):
         """
         Verifica se o espaço tem permissão (Premium S+)
         """
+        # Verificar autenticação antes de qualquer query
+        if not request.user.is_authenticated:
+            return redirect(f'/accounts/login/?next={request.path}')
 
         espaco = Espaco.objects.filter(responsavel=request.user).first()
 
@@ -1000,7 +1025,7 @@ class DashboardSalaCriarView(EspacoRequiredMixin, CreateView):
 
         # Verificar se tem assinatura ativa com plano adequado
         assinatura = Assinatura.objects.filter(
-            usuario=request.user,  # ✅ request.user (sem self)
+            usuario=request.user,
             status='active'
         ).select_related('plano').first()
 
@@ -1047,14 +1072,17 @@ class DashboardSalaCriarView(EspacoRequiredMixin, CreateView):
         """
         Associa a sala ao espaço do usuário logado
         """
-        from django.db import IntegrityError
+        from django.db import IntegrityError, transaction
         
         espaco = Espaco.objects.filter(responsavel=self.request.user).first()
         form.instance.espaco = espaco
         
         try:
-            # Tentar salvar a sala
-            response = super().form_valid(form)
+            # Tentar salvar a sala. O savepoint isola o erro de duplicidade:
+            # sem ele, dentro de uma transação o banco recusa novas consultas
+            # e a tela de erro não consegue ser montada.
+            with transaction.atomic():
+                response = super().form_valid(form)
             
             messages.success(
                 self.request,
@@ -1111,6 +1139,9 @@ class DashboardSalaEditarView(EspacoRequiredMixin, UpdateView):
         """
         Verifica se o espaço tem permissão e se a sala pertence a ele
         """
+        # Verificar autenticação antes de qualquer query
+        if not request.user.is_authenticated:
+            return redirect(f'/accounts/login/?next={request.path}')
 
         espaco = Espaco.objects.filter(responsavel=request.user).first()
 
@@ -1120,7 +1151,7 @@ class DashboardSalaEditarView(EspacoRequiredMixin, UpdateView):
 
         # Verificar se tem assinatura ativa com plano adequado
         assinatura = Assinatura.objects.filter(
-            usuario=request.user,  # ✅ request.user (sem self)
+            usuario=request.user,
             status='active'
         ).select_related('plano').first()
 
@@ -1184,11 +1215,12 @@ class DashboardSalaEditarView(EspacoRequiredMixin, UpdateView):
         """
         Salva as alterações
         """
-        from django.db import IntegrityError
+        from django.db import IntegrityError, transaction
         
         try:
-            # Tentar salvar as alterações
-            response = super().form_valid(form)
+            # Tentar salvar as alterações (savepoint isola o erro de duplicidade)
+            with transaction.atomic():
+                response = super().form_valid(form)
             
             messages.success(
                 self.request,
@@ -1582,8 +1614,8 @@ class ConvidarTerapeutaView(EspacoRequiredMixin, View):
             # Envia o email
             try:
                 send_mail(
-                    subject=f'Convite do {espaco.nome} - Espaço Vital',
-                    message=f'Você recebeu um convite do {espaco.nome} para usar a plataforma Espaço Vital.',
+                    subject=f'Convite do {espaco.nome} - Seravitta',
+                    message=f'Você recebeu um convite do {espaco.nome} para usar a plataforma Seravitta.',
                     from_email='noreply@espacovital.com.br',
                     recipient_list=[email],
                     html_message=html_email,
